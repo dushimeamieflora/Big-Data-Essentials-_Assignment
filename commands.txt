@@ -1,0 +1,253 @@
+
+BIG DATA ESSENTIAL ASSIGNMENT - COMMANDS.TXT
+Distributed Taxi Trip Analytics - NYC Yellow Taxi, April-June 2023
+================================================================================
+Run these in order. Replace $HADOOP_HOME / $HADOOP_STREAMING_JAR paths with
+your own cluster's paths (check with: find / -name "hadoop-streaming*.jar").
+
+
+
+STEP 0. VERIFY HADOOP IS RUNNING
+--------------------------------------------------------------------------------
+jps                                  # should show NameNode, DataNode,
+                                      # ResourceManager, NodeManager, etc.
+hdfs dfsadmin -report
+
+
+
+STEP 1. DOWNLOAD THE DATASET 
+--------------------------------------------------------------------------------
+# From https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
+# Download these three files (right-click each month -> copy link, or use wget):
+wget https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-04.parquet
+wget https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-05.parquet
+wget https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-06.parquet
+
+
+
+STEP 2. CONVERT PARQUET -> CSV
+--------------------------------------------------------------------------------
+pip install pandas pyarrow --break-system-packages
+python3 cleaning/convert_parquet_to_csv.py \
+    yellow_tripdata_2023-04.parquet \
+    yellow_tripdata_2023-05.parquet \
+    yellow_tripdata_2023-06.parquet
+
+
+
+STEP 3. CLEAN THE DATA 
+--------------------------------------------------------------------------------
+python3 cleaning/clean_data.py \
+    yellow_tripdata_2023-04.csv \
+    yellow_tripdata_2023-05.csv \
+    yellow_tripdata_2023-06.csv \
+    --out cleaned_2023_q2.csv | tee cleaning_report.txt
+
+
+
+STEP 4. CREATE HDFS DIRECTORY STRUCTURE (Section 6)
+--------------------------------------------------------------------------------
+hdfs dfs -mkdir -p /taxi_project/input/raw
+hdfs dfs -mkdir -p /taxi_project/input/cleaned
+hdfs dfs -mkdir -p /taxi_project/output/hourly
+hdfs dfs -mkdir -p /taxi_project/output/daily
+hdfs dfs -mkdir -p /taxi_project/output/locations
+hdfs dfs -mkdir -p /taxi_project/output/revenue
+hdfs dfs -mkdir -p /taxi_project/output/revenue_top10        # stage-2 output
+hdfs dfs -mkdir -p /taxi_project/output/payment
+hdfs dfs -mkdir -p /taxi_project/output/distance
+hdfs dfs -mkdir -p /taxi_project/output/routes
+hdfs dfs -mkdir -p /taxi_project/output/routes_top20_count
+hdfs dfs -mkdir -p /taxi_project/output/routes_top20_revenue
+hdfs dfs -mkdir -p /taxi_project/output/duration
+hdfs dfs -mkdir -p /taxi_project/output/anomalies
+hdfs dfs -mkdir -p /taxi_project/output/top10_locations
+hdfs dfs -mkdir -p /taxi_project/output/bottom10_locations
+hdfs dfs -mkdir -p /taxi_project/archive
+
+
+
+STEP 5. UPLOAD RAW + CLEANED DATA TO HDFS (Section 6 evidence)
+--------------------------------------------------------------------------------
+hdfs dfs -put yellow_tripdata_2023-04.csv /taxi_project/input/raw/
+hdfs dfs -put yellow_tripdata_2023-05.csv /taxi_project/input/raw/
+hdfs dfs -put yellow_tripdata_2023-06.csv /taxi_project/input/raw/
+hdfs dfs -put cleaned_2023_q2.csv /taxi_project/input/cleaned/
+
+hdfs dfs -ls -h /taxi_project/input/raw/
+hdfs dfs -du -h /taxi_project/input/raw/
+hdfs dfs -ls -h /taxi_project/input/cleaned/
+hdfs dfsadmin -report
+
+# Block info evidence for the report:
+hdfs fsck /taxi_project/input/cleaned/cleaned_2023_q2.csv -files -blocks -locations
+
+
+
+STEP 6. RUN THE MAPREDUCE JOBS (Hadoop Streaming) - Sections 8, 10
+--------------------------------------------------------------------------------
+export STREAM_JAR=$HADOOP_HOME/share/hadoop/tools/lib/hadoop-streaming-*.jar
+export IN=/taxi_project/input/cleaned
+
+# (a) Hourly Taxi Demand
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/hourly \
+  -mapper "python3 mapper_hourly.py" -reducer "python3 reducer_hourly.py" \
+  -file mappers/mapper_hourly.py -file reducers/reducer_hourly.py
+
+# (b) Daily Demand
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/daily \
+  -mapper "python3 mapper_daily.py" -reducer "python3 reducer_daily.py" \
+  -file mappers/mapper_daily.py -file reducers/reducer_daily.py
+
+# (c) Pickup Location Analysis
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/locations \
+  -mapper "python3 mapper_location.py" -reducer "python3 reducer_location.py" \
+  -file mappers/mapper_location.py -file reducers/reducer_location.py
+
+# (d) Revenue by Pickup Location  <-- STAGE 1 of the compulsory 2-stage job
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/revenue \
+  -mapper "python3 mapper_revenue.py" -reducer "python3 reducer_revenue.py" \
+  -file mappers/mapper_revenue.py -file reducers/reducer_revenue.py
+
+# (e) Payment Method Analysis
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/payment \
+  -mapper "python3 mapper_payment.py" -reducer "python3 reducer_payment.py" \
+  -file mappers/mapper_payment.py -file reducers/reducer_payment.py
+
+# (f) Distance-Based Fare Analysis
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/distance \
+  -mapper "python3 mapper_distance.py" -reducer "python3 reducer_distance.py" \
+  -file mappers/mapper_distance.py -file reducers/reducer_distance.py
+
+# (g) Busiest Pickup-Dropoff Routes
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/routes \
+  -mapper "python3 mapper_route.py" -reducer "python3 reducer_route.py" \
+  -file mappers/mapper_route.py -file reducers/reducer_route.py
+
+# (h) Trip Duration Analysis
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/duration \
+  -mapper "python3 mapper_duration.py" -reducer "python3 reducer_duration.py" \
+  -file mappers/mapper_duration.py -file reducers/reducer_duration.py
+
+# (i) Anomaly Detection
+hadoop jar $STREAM_JAR \
+  -input $IN -output /taxi_project/output/anomalies \
+  -mapper "python3 mapper_anomaly.py" -reducer "python3 reducer_anomaly.py" \
+  -file mappers/mapper_anomaly.py -file reducers/reducer_anomaly.py
+
+
+--------------------------------------------------------------------------------
+STEP 7. MULTI-STAGE MAPREDUCE - COMPULSORY (Section 9)
+Job 2 consumes Job 1's HDFS output (/taxi_project/output/revenue) and
+produces the Top 10 highest-revenue pickup zones.
+reducer_revenue.py output columns: PU  count  fare_sum  tip_sum  revenue_sum  avg_fare  avg_dist
+                                     0    1       2         3         4          5          6
+=> sort field for "revenue_sum" is index 3 (0=key(PU), 1=count, 2=fare_sum, 3=tip_sum...)
+NOTE: recount carefully against your actual reducer output before running --
+field indices are documented at the top of reducer_topn.py and match the
+tab-separated VALUE columns that follow the key.
+--------------------------------------------------------------------------------
+# First show the INTERMEDIATE Stage-1 HDFS output (required evidence):
+hdfs dfs -cat /taxi_project/output/revenue/part-* | head -20
+hdfs dfs -ls -h /taxi_project/output/revenue
+
+# Stage 2: Top 10 pickup zones by total revenue (revenue_sum is field index 3)
+hadoop jar $STREAM_JAR \
+  -input /taxi_project/output/revenue \
+  -output /taxi_project/output/revenue_top10 \
+  -mapper "python3 mapper_topn.py" \
+  -reducer "python3 reducer_topn.py 3 10 desc" \
+  -file mappers/mapper_topn.py -file reducers/reducer_topn.py \
+  -numReduceTasks 1
+
+hdfs dfs -cat /taxi_project/output/revenue_top10/part-*
+
+
+STEP 8. REUSE THE SAME TOP-N PATTERN FOR OTHER REQUIRED TOP/BOTTOM LISTS
+--------------------------------------------------------------------------------
+# Top 10 pickup zones by TRIP COUNT (reducer_location.py output: zone<TAB>count, count=field idx 1)
+hadoop jar $STREAM_JAR \
+  -input /taxi_project/output/locations \
+  -output /taxi_project/output/top10_locations \
+  -mapper "python3 mapper_topn.py" -reducer "python3 reducer_topn.py 1 10 desc" \
+  -file mappers/mapper_topn.py -file reducers/reducer_topn.py -numReduceTasks 1
+
+# Bottom 10 pickup zones by TRIP COUNT
+hadoop jar $STREAM_JAR \
+  -input /taxi_project/output/locations \
+  -output /taxi_project/output/bottom10_locations \
+  -mapper "python3 mapper_topn.py" -reducer "python3 reducer_topn.py 1 10 asc" \
+  -file mappers/mapper_topn.py -file reducers/reducer_topn.py -numReduceTasks 1
+
+# Top 20 routes by trip COUNT (reducer_route.py output: route<TAB>count,fare_sum,revenue_sum; count=idx1)
+hadoop jar $STREAM_JAR \
+  -input /taxi_project/output/routes \
+  -output /taxi_project/output/routes_top20_count \
+  -mapper "python3 mapper_topn.py" -reducer "python3 reducer_topn.py 1 20 desc" \
+  -file mappers/mapper_topn.py -file reducers/reducer_topn.py -numReduceTasks 1
+
+# Top 20 routes by REVENUE (revenue_sum = idx3)
+hadoop jar $STREAM_JAR \
+  -input /taxi_project/output/routes \
+  -output /taxi_project/output/routes_top20_revenue \
+  -mapper "python3 mapper_topn.py" -reducer "python3 reducer_topn.py 3 20 desc" \
+  -file mappers/mapper_topn.py -file reducers/reducer_topn.py -numReduceTasks 1
+
+
+
+STEP 9. YARN DEMONSTRATION (Section 11)
+--------------------------------------------------------------------------------
+yarn application -list -appStates ALL
+yarn application -status <application_id>
+# Open in browser and screenshot: http://localhost:8088/cluster
+# Record: Application ID, state, start time, finish time, containers used,
+# final status -- for at least 2-3 of the jobs above (e.g. hourly + revenue
+# + the stage-2 top10 job).
+
+
+
+STEP 10. PERFORMANCE COMPARISON - COMPULSORY (Section 12)
+--------------------------------------------------------------------------------
+# Hadoop side: note execution time from the YARN UI for the revenue job
+# (Job History / http://localhost:19888/jobhistory), plus mapper/reducer
+# task counts and output size:
+hdfs dfs -du -h /taxi_project/output/revenue
+
+# Pandas side (run locally, not on the cluster):
+pip install pandas --break-system-packages
+python3 performance/pandas_benchmark.py cleaned_2023_q2.csv
+# Fill the comparison table in the report using both sets of numbers.
+
+
+STEP 11. PULL RESULTS LOCALLY FOR VISUALIZATION (Section 14)
+--------------------------------------------------------------------------------
+hdfs dfs -getmerge /taxi_project/output/hourly              hourly.tsv
+hdfs dfs -getmerge /taxi_project/output/daily                daily.tsv
+hdfs dfs -getmerge /taxi_project/output/top10_locations      top10_locations.tsv
+hdfs dfs -getmerge /taxi_project/output/payment               payment.tsv
+hdfs dfs -getmerge /taxi_project/output/distance               distance.tsv
+hdfs dfs -getmerge /taxi_project/output/routes_top20_count     top10_routes.tsv
+
+pip install matplotlib --break-system-packages
+python3 visualizations/generate_charts.py
+# Produces 01_trips_by_hour.png ... 07_revenue_vs_distance.png
+
+
+STEP 12. ARCHIVE RAW INPUT (housekeeping, Section 6)
+--------------------------------------------------------------------------------
+hdfs dfs -mv /taxi_project/input/raw/*.csv /taxi_project/archive/
+
+
+================================================================================
+QUICK LOCAL TEST (before running on the real cluster, sanity-check any
+mapper/reducer pair on a tiny sample -- exactly how Hadoop chains them):
+================================================================================
+cat sample.csv | python3 mappers/mapper_hourly.py | sort | python3 reducers/reducer_hourly.py
