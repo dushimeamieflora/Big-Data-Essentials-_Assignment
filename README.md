@@ -5,10 +5,10 @@ datasets" requirement in Section 2 of the assignment brief).
 
 ## 1\. Environment Assumptions
 
-* Hadoop 3.x (HDFS + YARN) installed and running in pseudo-distributed or
+* Hadoop 3.2.4 (HDFS + YARN) installed and running in pseudo-distributed or
 cluster mode. Verify with `jps` — you should see `NameNode`, `DataNode`,
 `ResourceManager`, `NodeManager`, `SecondaryNameNode`.
-* Python 3.8+ available on **every node** (mappers/reducers run as
+* Python 3.13 available on **every node** (mappers/reducers run as
 subprocesses via Hadoop Streaming, so `python3` must be on each
 NodeManager's `PATH`, or shipped with `-file`).
 * `pandas` and `pyarrow` installed locally for the Parquet→CSV conversion,
